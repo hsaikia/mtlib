@@ -161,14 +161,235 @@ namespace mtlib {
 		}
 	}
 
-	void Dag::getAllPathsNaive(std::vector<Sequence>& seqAndScores, const size_t& edgeDataIdx, const ObjectiveFunction& fun) const
+	void Dag::getAllPaths(Dag& trackingGraph, const size_t edgeDataIdx, const ObjectiveFunction& fun, const std::string& statsFile, double& totMem) const
+	{
+		//memory consumption 
+		totMem = 0;
+
+		// for every node
+		// record shortest paths from every connected source and sink
+		// find the best source-sink pair
+		// trace the shortest path through that node
+
+		//first we do a topological sort
+
+		std::vector<size_t> ord;
+		sortByNodeTime(ord);
+
+		// Traversal Info stored for every source and/or sink
+
+		struct TraversalInfo {
+			dagkey prevNode;
+			double bestCost;
+			long length;
+
+			TraversalInfo() {
+				prevNode = -1;
+				bestCost = 0;
+				length = 0;
+			}
+
+			TraversalInfo(dagkey p, double c, long l) {
+				prevNode = p;
+				bestCost = c;
+				length = l;
+			}
+
+		};
+
+		// record of all best paths from every source (sink) to every node
+
+
+		std::vector<std::map<dagkey, TraversalInfo> > Rec[2];
+
+		// two passes
+
+		for (auto g = 0; g < 2; g++) {
+			Rec[g].resize(nodes_.size());
+
+			for (auto j = 0; j < nodes_.size(); j++) {
+
+				auto i = (g == 0) ? ord[j] : ord[nodes_.size() - 1 - j];
+
+				if (nodes_[i].E[g].size() == 0) {
+					Rec[g][i].insert(std::pair<dagkey, TraversalInfo>(nodes_[i].key_, TraversalInfo()));
+				}
+				else {
+					for (const auto& eKey : nodes_[i].E[g]) {
+
+						//weight
+						auto eIdx = edgeMap_.find(eKey)->second;
+						auto w = getEdgeData(eKey, edgeDataIdx);
+
+						// A -> B is the edge, nodes[i] is B, so we need the first node of this edge
+
+						auto prevKey = edges_[eIdx].getOtherNode(nodes_[i].key_);
+						auto prevIdx = nodeMap_.find(prevKey)->second;
+
+						// best source to prevKey
+
+						for (auto& smapPrev : Rec[g][prevIdx]) {
+
+							TraversalInfo ti;
+							if (fun == SUM) {
+								ti.bestCost = smapPrev.second.bestCost + w;
+							}
+							else if (fun == SQUARED_AVERAGE) {
+								ti.bestCost = incRootSquaredMean(smapPrev.second.bestCost, smapPrev.second.length, w);
+							}
+							
+							ti.prevNode = prevKey;
+							ti.length = smapPrev.second.length + 1;
+
+							// see if there is an edge from this source before
+							// if none
+							if (Rec[g][i].find(smapPrev.first) == Rec[g][i].end()) {
+								Rec[g][i].insert(std::pair<dagkey, TraversalInfo>(smapPrev.first, ti));
+							}
+							else {
+								if (ti.bestCost < Rec[g][i][smapPrev.first].bestCost) {
+									Rec[g][i][smapPrev.first] = ti;
+								}
+							}
+						}
+					}
+				}
+			}
+
+		}
+
+		//compute total memory used in the records
+
+		//std::cout << "Sizeof pair " << sizeof(std::pair<dagkey, TraversalInfo>) << "\n";
+
+		for (auto g = 0; g < 2; g++) {
+			for (auto j = 0; j < Rec[g].size(); j++) {
+				totMem += Rec[g][j].size() * sizeof(std::pair<dagkey, TraversalInfo>);
+			}
+		}
+
+		// Now that we have all the best scores for P_min^+ and P_min^- we can solve for P_min for each node
+
+		struct BestPath {
+			dagkey s; // source
+			dagkey k; // sink
+			double score;
+		};
+
+		std::vector<BestPath> bestPath(nodes_.size());
+
+		//std::cout << "sizeof BestPath " << sizeof(BestPath) << "\n";
+
+		totMem += (sizeof(BestPath) * nodes_.size());
+
+		for (auto j = 0; j < nodes_.size(); j++) {
+
+			auto i = ord[j];
+
+			double bestScore = std::numeric_limits<double>::max();
+
+			for (const auto& src : Rec[0][i]) {
+				for (const auto& snk : Rec[1][i]) {
+
+					double score = 0;
+
+					if (fun == SUM) {
+						score = src.second.bestCost + snk.second.bestCost;
+					}
+					else if (fun == SQUARED_AVERAGE) {
+						score = combinedRootSquaredMean(src.second.bestCost, snk.second.bestCost, src.second.length, snk.second.length);
+					}
+					
+					if (score < bestScore) {
+						bestPath[i].s = src.first;
+						bestPath[i].k = snk.first;
+						bestPath[i].score = score;
+						bestScore = score;
+					}
+				}
+			}
+		}
+
+		std::ofstream f;
+		f.open(statsFile);
+
+		// trace the paths
+
+		trackingGraph.clear();
+
+		std::vector<bool> done(nodes_.size(), false);
+
+		totMem += (sizeof(bool) * done.size());
+
+		for (size_t i = 0; i < nodes_.size(); i++) {
+
+			if (done[i]) {
+				continue;
+			}
+
+			done[i] = true;
+
+			// what is the best source and sink?
+
+			dagkey bestS[2];
+
+			bestS[0] = bestPath[i].s;
+			bestS[1] = bestPath[i].k;
+
+			trackingGraph.addNode(nodes_[i].key_);
+
+			auto len = 0;
+
+			for (auto g = 0; g < 2; g++) {
+
+				auto idx = i;
+
+				auto key = nodes_[i].key_;
+
+				while (true) {
+
+					auto nextKey = Rec[g][idx][bestS[g]].prevNode;
+
+					if (nextKey == -1) {
+						break;
+					}
+
+					idx = nodeMap_.find(nextKey)->second;
+
+					if (bestPath[idx].s == bestS[0] && bestPath[idx].k == bestS[1]) {
+						done[idx] = true;
+					}
+
+					trackingGraph.addEdge(DagEdge::makeKey(key, nextKey), key, nextKey, g);
+
+					len++;
+
+					key = nextKey;
+				}
+			}
+
+			f << len << "," << bestPath[i].score << "\n";
+
+		}
+
+		f.close();
+
+		transferNodeEdgeDataToSubDag(trackingGraph);
+	}
+
+	void Dag::getAllPathsNaive(std::vector<Sequence>& seqAndScores, const size_t& edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const
 	{
 		seqAndScores.clear();
+
+		totMem = 0;
 
 		for (const auto& node : nodes_) {
 
 			Dag path;
-			findShortestPathViaNode(node.key_, path, edgeDataIdx, fun);
+			double memReq = 0;
+			findShortestPathViaNode(node.key_, path, edgeDataIdx, fun, memReq);
+
+			totMem = std::max(totMem, memReq);
 
 			Sequence s;
 
@@ -180,6 +401,7 @@ namespace mtlib {
 
 			seqAndScores.push_back(s);
 		}
+
 	}
 
 	void Dag::findAllMatchesToPathViaNode(const dagkey nodeKey, const int numCandidates, const int numMatches, 
@@ -214,13 +436,13 @@ namespace mtlib {
 
 		auto selHist = dagNodes.find(nodeKey)->second.hist;
 
-		for (const auto& node : dagNodes) {
+		for (const auto& node : nodes_) {
 
-			auto sim = Histogram4d::histDiff(node.second.hist, selHist, 0 , CHI_SQUARED);
+			auto sim = Histogram4d::histDiff(dagNodes.find(node.key_)->second.hist, selHist, 0 , CHI_SQUARED);
 			
 			CandidateMatch cm;
 			cm.histSim = sim;
-			cm.key = node.first;
+			cm.key = node.key_;
 			CMs.push_back(cm);
 			
 		}
@@ -241,7 +463,9 @@ namespace mtlib {
 
 		Dag path;
 
-		findShortestPathViaNode(nodeKey, path, edgeDataIdx, fun);
+		double memReq;
+
+		findShortestPathViaNode(nodeKey, path, edgeDataIdx, fun, memReq);
 
 		auto selHists = path.getHistsForPath(dagNodes);
 
@@ -249,7 +473,9 @@ namespace mtlib {
 
 			Dag candPath;
 
-			findShortestPathViaNode(CMs[i].key, candPath, edgeDataIdx, fun);
+			double memReq1;
+
+			findShortestPathViaNode(CMs[i].key, candPath, edgeDataIdx, fun, memReq1);
 
 			auto candHists = candPath.getHistsForPath(dagNodes);
 
@@ -263,6 +489,35 @@ namespace mtlib {
 		}
 
 		sort(DTWMs.begin(), DTWMs.end(), DTWMatches::compareDM);
+
+		std::set<dagkey> addedCandidateNodes;
+
+		int matchesTracked = 0;
+
+		//add the best matches
+		for (auto i = 0; i < DTWMs.size(); i++) {
+
+			if (matchesTracked == numMatches) {
+				break;
+			}
+
+			Dag matchedPath;
+			double memReq2;
+
+			if (addedCandidateNodes.find(CMs[DTWMs[i].idx].key) != addedCandidateNodes.end()) {
+				continue;
+			}
+
+			findShortestPathViaNode(CMs[DTWMs[i].idx].key, matchedPath, edgeDataIdx, fun, memReq2);
+
+			//add all nodes on this path to the added candidates set
+			for (auto& n : matchedPath.nodes_) {
+				addedCandidateNodes.insert(n.key_);
+			}
+
+			combineDags(matchedPaths, matchedPath);
+			matchesTracked++;
+		}
 
 		for (auto i = 0; i < DTWMs.size(); i++) {
 
@@ -411,8 +666,10 @@ namespace mtlib {
 
 		Dag path1, path2;
 
-		findShortestPathViaNode(nodeKey1, path1, edgeDataIdx, fun);
-		findShortestPathViaNode(nodeKey2, path2, edgeDataIdx, fun);
+		double mem1, mem2;
+
+		findShortestPathViaNode(nodeKey1, path1, edgeDataIdx, fun, mem1);
+		findShortestPathViaNode(nodeKey2, path2, edgeDataIdx, fun, mem2);
 
 		auto hists1 = path1.getHistsForPath(dagNodes);
 		auto hists2 = path2.getHistsForPath(dagNodes);
@@ -532,17 +789,19 @@ namespace mtlib {
 
 	}
 
-	void Dag::findShortestPathViaNode(const dagkey nodeKey, Dag& path, const size_t edgeDataIdx, const ObjectiveFunction& fun) const
+	void Dag::findShortestPathViaNode(const dagkey nodeKey, Dag& path, const size_t edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const
 	{
 		// Djikstra Shortest Path - forward and back
 		// we minimize sqrt(sum of squared distances of edge weights / number of edges) 
 
-		std::cout << "Shortest Path through " << nodeKey << " called\n";
+		//std::cout << "Shortest Path through " << nodeKey << " called\n";
+
+		totMem = 0;
 
 		path.clear();
 
 		if (nodeMap_.find(nodeKey) == nodeMap_.end()) {
-			std::cout << "nodeKey not found in DAG. Returning.\n";
+			std::cout << "[findShortestPathViaNode] nodeKey " << nodeKey << " not found in DAG. (# nodes " << nodeMap_.size() << "). Returning.\n";
 			return;
 		}
 
@@ -552,6 +811,9 @@ namespace mtlib {
 			double best_cost_to_root;
 			int length_to_root;
 		};
+
+		unsigned long long maxQLen = 0;
+		unsigned long long maxInfoLen = 0;
 
 		for (auto g = 0; g < 2; g++) {
 			std::map<dagkey, TraversalInfo> info;
@@ -569,6 +831,9 @@ namespace mtlib {
 			double bestCost = std::numeric_limits<double>::max();
 
 			while (!Q.empty()) {
+
+				maxQLen = std::max(maxQLen, Q.size());
+				maxInfoLen = std::max(maxInfoLen, info.size());
 
 				auto Key = Q.front();
 
@@ -643,6 +908,13 @@ namespace mtlib {
 
 		}
 
+		if (path.numNodes() == 0) {
+			return;
+		}
+
+		totMem += (maxQLen * sizeof(dagkey));
+		totMem += (maxInfoLen * sizeof(std::pair<dagkey, TraversalInfo>));
+
 		//debug - check if path is consistent
 
 		std::vector<size_t> ord;
@@ -667,7 +939,7 @@ namespace mtlib {
 
 		transferNodeEdgeDataToSubDag(path);
 
-		std::cout << "Path of length " << path.nodes_.size() << "\n\n";
+		//std::cout << "Path of length " << path.nodes_.size() << "\n\n";
 
 	}
 
@@ -956,9 +1228,11 @@ namespace mtlib {
 		}
 	}
 
-	void Dag::getAllPathsAtTime(const int time, std::vector<std::vector<dagkey>>& sequences, const size_t edgeDataIdx, const ObjectiveFunction& fun) const
+	void Dag::getAllPathsAtTime(const int time, std::vector<std::vector<dagkey>>& sequences, const size_t edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const
 	{
 		sequences.clear();
+
+		totMem = 0;
 
 		//std::ofstream f;
 
@@ -971,7 +1245,9 @@ namespace mtlib {
 			}
 
 			Dag path;
-			findShortestPathViaNode(node.key_, path, edgeDataIdx, fun);
+			double memReq = 0;
+			findShortestPathViaNode(node.key_, path, edgeDataIdx, fun, memReq);
+			totMem += memReq;
 
 			std::vector<dagkey> sequence;
 
@@ -982,6 +1258,8 @@ namespace mtlib {
 			sequences.push_back(sequence);
 
 		}
+
+		totMem /= nodes_.size();
 
 		//f.close();
 		//std::cout << "Added " << sequences.size() << " Sequences.\n";
@@ -1082,6 +1360,21 @@ namespace mtlib {
 	const double Dag::getEdgeData(const dagkey eKey, const size_t idx) const
 	{
 		return edgeData_[idx].w[edgeMap_.find(eKey)->second];
+	}
+
+	void Dag::combineDags(Dag & dag1, const Dag & dag2)
+	{
+		// add nodes and edges of dag2 in dag1, when the function returns dag1 = dag1 + dag2
+		// TODO - add the dag node data, and edge data as well, this is tricky, as labels could be different..
+
+		for (auto& n : dag2.nodes_) {
+			dag1.addNode(n.key_);
+		}
+
+		for (auto& e : dag2.edges_) {
+			dag1.addEdge(e.key_, e.idx1_, e.idx2_, 1);
+		}
+
 	}
 
 	double Dag::incMean(double oldMean, long oldLen, double newVal)

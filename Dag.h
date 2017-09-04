@@ -176,14 +176,17 @@ namespace mtlib {
 
 		double scorePath(const size_t& edgeDataIdx, const ObjectiveFunction& f) const;
 
+		/* Finds best paths through all nodes using Djikstra - TopoInVis 2017 */
+		void getAllPaths(Dag& trackingGraph, const size_t edgeDataIdx, const ObjectiveFunction& fun, const std::string& statsFile, double& totMem) const;
+
 		/* Naive version of getAllPaths - calls findShortestPathViaNode from all nodes */
-		void getAllPathsNaive(std::vector<Sequence>& seqAndScores, const size_t& edgeDataIdx, const ObjectiveFunction& fun) const;
+		void getAllPathsNaive(std::vector<Sequence>& seqAndScores, const size_t& edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const;
 
 		/* Finds the best paths through all nodes in a given timestep - calls findShortestPathViaNode from all nodes in that timestep */
-		void getAllPathsAtTime(const int time, std::vector<std::vector<dagkey> >& sequences, const size_t edgeDataIdx, const ObjectiveFunction& fun) const;
+		void getAllPathsAtTime(const int time, std::vector<std::vector<dagkey> >& sequences, const size_t edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const;
 
 		/* Finds the best path through a node using Djikstra - EuroVis 2017 */
-		void findShortestPathViaNode(const dagkey nodeKey, Dag& path, const size_t edgeDataIdx, const ObjectiveFunction& fun) const;
+		void findShortestPathViaNode(const dagkey nodeKey, Dag& path, const size_t edgeDataIdx, const ObjectiveFunction& fun, double& totMem) const;
 
 		/* Finds all best matching paths to a path through a node using Djikstra - EuroVis 2017 */
 		void findAllMatchesToPathViaNode(const dagkey nodeKey, const int numCandidates, const int numMatches, 
@@ -225,6 +228,8 @@ namespace mtlib {
 		const double getEdgeData(const dagkey eKey, const size_t idx) const;
 
 		//static functions
+
+		static void combineDags(Dag& dag1, const Dag& dag2);
 
 		static double incMean(double oldMean, long oldLen, double newVal);
 		static double incRootSquaredMean(double oldMean, long oldLen, double newVal);
