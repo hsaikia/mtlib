@@ -1,5 +1,5 @@
-# mtlib
-mtlib is a library to compute merge trees and perform various operations on them like simplification and comparison.
+# The merge tree library (mtlib)
+mtlib is a library to compute merge trees and perform various operations on them like simplification and comparison. It includes two methods for static similarity estimation of subtrees of the merge trees. mtlib also contain implementations for tracking subtrees in time-dependent datasets and comparing spatio-temporal features.  
 
 # References
 
